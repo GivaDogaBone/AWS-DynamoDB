@@ -11,8 +11,8 @@ terraform {
   
   # If your Terraform version doesn't support import blocks, comment this out
   # and use manual import with: terraform import aws_dynamodb_table.venues venues
-  import {
-    to = aws_dynamodb_table.venues
-    id = "venues"
-  }
+  # import {
+  #   to = aws_dynamodb_table.venues
+  #   id = "venues"
+  # }
 }
