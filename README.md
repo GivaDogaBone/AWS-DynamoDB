@@ -138,3 +138,16 @@ If your workflow fails after setting up the secrets:
 4. Confirm that the Lambda execution role has the required permissions for DynamoDB and CloudWatch
 
 These steps should help you successfully set up the GitHub Secrets required for your AWS deployment workflow.
+
+## API Documentation
+
+The API comes with built-in Swagger documentation. After deployment, you can access:
+
+1. **Swagger UI**: Visit `https://[your-api-id].execute-api.[region].amazonaws.com/prod/docs` 
+   - Interactive documentation where you can try out the API endpoints
+
+2. **OpenAPI Schema**: `https://[your-api-id].execute-api.[region].amazonaws.com/prod/openapi.json`
+   - Raw OpenAPI schema that can be imported into other tools
+
+3. **ReDoc UI**: `https://[your-api-id].execute-api.[region].amazonaws.com/prod/redoc`
+   - Alternative documentation UI that's more readable

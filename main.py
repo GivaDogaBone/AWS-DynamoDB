@@ -2,20 +2,40 @@
 import os
 import uuid
 import boto3
+import logging
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 
-# Create FastAPI app
-app = FastAPI(title="Venues API")
+# Configure logging
+logger = logging.getLogger("uvicorn")
+logger.setLevel(logging.INFO)
+
+# Create FastAPI app with explicit Swagger docs configuration
+app = FastAPI(
+    title="Venues API",
+    description="API for managing venue information in DynamoDB",
+    version="1.0.0",
+    docs_url="/docs",  # Keep standard docs URL
+    redoc_url="/redoc",  # Keep ReDoc URL
+    openapi_url="/openapi.json"  # Path where OpenAPI schema will be available
+)
 
 # Get AWS region from environment variables
 aws_region = os.environ.get("CUSTOM_AWS_REGION", os.environ.get("AWS_REGION", "us-west-2"))
 table_name = os.environ.get("DYNAMODB_TABLE_NAME", "venues")
 
+# Log configuration for debugging
+logger.info(f"Starting app with region={aws_region}, table={table_name}")
+
 # Initialize DynamoDB client
-dynamodb = boto3.resource('dynamodb', region_name=aws_region)
-table = dynamodb.Table(table_name)
+try:
+    dynamodb = boto3.resource('dynamodb', region_name=aws_region)
+    table = dynamodb.Table(table_name)
+    logger.info(f"Successfully initialized DynamoDB client for table {table_name}")
+except Exception as e:
+    logger.error(f"Error initializing DynamoDB client: {str(e)}")
+    # Don't raise here, let it fail on specific endpoints
 
 
 # Define data models
@@ -53,6 +73,7 @@ async def list_venues():
         venues = response.get('Items', [])
         return venues
     except Exception as e:
+        logger.error(f"Error listing venues: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to retrieve venues: {str(e)}")
 
 
@@ -73,6 +94,7 @@ async def create_venue(venue: VenueCreate):
         table.put_item(Item=venue_item)
         return {**venue_item}
     except Exception as e:
+        logger.error(f"Error creating venue: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to create venue: {str(e)}")
 
 
@@ -90,6 +112,7 @@ async def get_venue(venue_id: str):
     except HTTPException as he:
         raise he
     except Exception as e:
+        logger.error(f"Error retrieving venue {venue_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to retrieve venue: {str(e)}")
 
 
@@ -125,6 +148,7 @@ async def update_venue(venue_id: str, venue: VenueBase):
     except HTTPException as he:
         raise he
     except Exception as e:
+        logger.error(f"Error updating venue {venue_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to update venue: {str(e)}")
 
 
@@ -145,13 +169,14 @@ async def delete_venue(venue_id: str):
     except HTTPException as he:
         raise he
     except Exception as e:
+        logger.error(f"Error deleting venue {venue_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to delete venue: {str(e)}")
 
 
-@app.get("/test")
+@app.get("/test", include_in_schema=True)
 async def test_connection():
     """
-    Test endpoint to check connections
+    Test endpoint to check connections and environment
     """
     try:
         # Test DynamoDB connection
@@ -193,10 +218,17 @@ async def test_connection():
             }
         }
     except Exception as e:
-        logger = logging.getLogger("uvicorn")
         logger.error(f"Error in test endpoint: {str(e)}")
         return {
             "status": "error",
             "message": str(e),
             "type": str(type(e).__name__)
         }
+
+
+@app.get("/api-schema", include_in_schema=False)
+async def get_openapi_schema():
+    """
+    Endpoint to return the OpenAPI schema JSON directly
+    """
+    return app.openapi()
