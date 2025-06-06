@@ -1,4 +1,3 @@
-
 # .github/workflows/deploy.yml
 name: Deploy Venues API
 
@@ -73,7 +72,7 @@ jobs:
         # Check if the DynamoDB table already exists in AWS
         if aws dynamodb describe-table --table-name venues &>/dev/null; then
           echo "DynamoDB table 'venues' already exists"
-          echo "::set-output name=table_exists::true"
+          echo "table_exists=true" >> $GITHUB_OUTPUT
           
           # Check if the table is already in the Terraform state
           if ! terraform state list | grep -q aws_dynamodb_table.venues; then
@@ -83,7 +82,7 @@ jobs:
             echo "Table already in Terraform state"
           fi
         else
-          echo "::set-output name=table_exists::false"
+          echo "table_exists=false" >> $GITHUB_OUTPUT
           echo "Table doesn't exist yet, will be created by Terraform"
         fi
 
@@ -166,18 +165,134 @@ jobs:
             --environment "Variables={CUSTOM_AWS_REGION=${{ secrets.AWS_REGION }},DYNAMODB_TABLE_NAME=venues}"
         fi
 
-    - name: Update API Gateway (if needed)
+    - name: Update API Gateway
       run: |
-        # This is a simplified example - you might need a more complex setup
-        # depending on your specific API Gateway configuration
+        # Check if API Gateway exists
         API_ID=$(aws apigateway get-rest-apis --query "items[?name=='venues-api'].id" --output text)
         
         if [ -z "$API_ID" ]; then
           echo "API Gateway not found. Creating new one..."
-          # Create API Gateway here (complex logic omitted)
-        else
-          echo "API Gateway found. Deploying changes..."
+          
+          # Create a new REST API
+          API_ID=$(aws apigateway create-rest-api \
+            --name "venues-api" \
+            --description "API for Venues application" \
+            --endpoint-configuration "types=REGIONAL" \
+            --query "id" --output text)
+          
+          echo "Created new API Gateway with ID: $API_ID"
+          
+          # Get the root resource ID
+          ROOT_ID=$(aws apigateway get-resources \
+            --rest-api-id $API_ID \
+            --query "items[?path=='/'].id" --output text)
+          
+          # Create a proxy resource with {proxy+} path
+          RESOURCE_ID=$(aws apigateway create-resource \
+            --rest-api-id $API_ID \
+            --parent-id $ROOT_ID \
+            --path-part "{proxy+}" \
+            --query "id" --output text)
+          
+          # Create ANY method for the proxy resource
+          aws apigateway put-method \
+            --rest-api-id $API_ID \
+            --resource-id $RESOURCE_ID \
+            --http-method ANY \
+            --authorization-type NONE
+          
+          # Get Lambda function ARN
+          LAMBDA_ARN=$(aws lambda get-function \
+            --function-name venues-api \
+            --query "Configuration.FunctionArn" --output text)
+          
+          # Create integration with Lambda
+          aws apigateway put-integration \
+            --rest-api-id $API_ID \
+            --resource-id $RESOURCE_ID \
+            --http-method ANY \
+            --type AWS_PROXY \
+            --integration-http-method POST \
+            --uri "arn:aws:apigateway:${{ secrets.AWS_REGION }}:lambda:path/2015-03-31/functions/$LAMBDA_ARN/invocations"
+          
+          # Create a deployment
           aws apigateway create-deployment \
             --rest-api-id $API_ID \
             --stage-name prod
+          
+          # Add Lambda permission for API Gateway
+          aws lambda add-permission \
+            --function-name venues-api \
+            --statement-id apigateway-invoke \
+            --action lambda:InvokeFunction \
+            --principal apigateway.amazonaws.com \
+            --source-arn "arn:aws:execute-api:${{ secrets.AWS_REGION }}:$(aws sts get-caller-identity --query 'Account' --output text):$API_ID/*/*/{proxy+}"
+          
+          # Output the API URL
+          API_URL="https://$API_ID.execute-api.${{ secrets.AWS_REGION }}.amazonaws.com/prod"
+          echo "API Gateway URL: $API_URL"
+          
+        else
+          echo "API Gateway found with ID: $API_ID"
+          
+          # Create a new deployment to update changes
+          aws apigateway create-deployment \
+            --rest-api-id $API_ID \
+            --stage-name prod
+          
+          # Output the API URL
+          API_URL="https://$API_ID.execute-api.${{ secrets.AWS_REGION }}.amazonaws.com/prod"
+          echo "API Gateway URL: $API_URL"
+        fi
+        
+        # Save the API URL to a file for reference
+        echo "API Gateway URL: https://$API_ID.execute-api.${{ secrets.AWS_REGION }}.amazonaws.com/prod" > api_url.txt
+        
+        # Also create root resource handler for better URL paths
+        if [ ! -z "$API_ID" ]; then
+          ROOT_ID=$(aws apigateway get-resources \
+            --rest-api-id $API_ID \
+            --query "items[?path=='/'].id" --output text)
+          
+          # Check if root already has ANY method
+          ROOT_ANY=$(aws apigateway get-method \
+            --rest-api-id $API_ID \
+            --resource-id $ROOT_ID \
+            --http-method ANY 2>/dev/null || echo "")
+          
+          if [ -z "$ROOT_ANY" ]; then
+            # Create ANY method for the root
+            aws apigateway put-method \
+              --rest-api-id $API_ID \
+              --resource-id $ROOT_ID \
+              --http-method ANY \
+              --authorization-type NONE
+            
+            # Get Lambda function ARN
+            LAMBDA_ARN=$(aws lambda get-function \
+              --function-name venues-api \
+              --query "Configuration.FunctionArn" --output text)
+            
+            # Create integration with Lambda
+            aws apigateway put-integration \
+              --rest-api-id $API_ID \
+              --resource-id $ROOT_ID \
+              --http-method ANY \
+              --type AWS_PROXY \
+              --integration-http-method POST \
+              --uri "arn:aws:apigateway:${{ secrets.AWS_REGION }}:lambda:path/2015-03-31/functions/$LAMBDA_ARN/invocations"
+            
+            # Create a new deployment after adding the root handler
+            aws apigateway create-deployment \
+              --rest-api-id $API_ID \
+              --stage-name prod
+            
+            # Add Lambda permission for API Gateway (root)
+            aws lambda add-permission \
+              --function-name venues-api \
+              --statement-id apigateway-invoke-root \
+              --action lambda:InvokeFunction \
+              --principal apigateway.amazonaws.com \
+              --source-arn "arn:aws:execute-api:${{ secrets.AWS_REGION }}:$(aws sts get-caller-identity --query 'Account' --output text):$API_ID/*/*/*" || true
+          fi
         fi
