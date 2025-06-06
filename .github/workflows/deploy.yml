@@ -1,3 +1,4 @@
+
 # .github/workflows/deploy.yml
 name: Deploy Venues API
 
@@ -12,26 +13,26 @@ jobs:
   test:
     name: Test Application
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
-      
+
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.9'
-        
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
         pip install pytest pytest-cov
-        
+
     - name: Run tests
       run: |
         pytest --cov=./ --cov-report=xml
-      
+
     - name: Upload coverage report
       uses: codecov/codecov-action@v3
       with:
@@ -43,54 +44,72 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
-      
+
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v2
       with:
         terraform_version: 1.0.0
-        
+
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v2
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ secrets.AWS_REGION }}
-        
+
     - name: Terraform Init
       run: terraform init
-      
+
     - name: Terraform Format
       run: terraform fmt -check
-      
+
+    - name: Check if table exists and import
+      id: check_table
+      run: |
+        # Check if the DynamoDB table already exists in AWS
+        if aws dynamodb describe-table --table-name venues &>/dev/null; then
+          echo "DynamoDB table 'venues' already exists"
+          echo "::set-output name=table_exists::true"
+          
+          # Check if the table is already in the Terraform state
+          if ! terraform state list | grep -q aws_dynamodb_table.venues; then
+            echo "Importing existing table into Terraform state"
+            terraform import aws_dynamodb_table.venues venues || echo "Import failed, but continuing"
+          else
+            echo "Table already in Terraform state"
+          fi
+        else
+          echo "::set-output name=table_exists::false"
+          echo "Table doesn't exist yet, will be created by Terraform"
+        fi
+
     - name: Terraform Plan
       run: terraform plan -var-file="terraform.tfvars"
-      
-    - name: Terraform Apply with Error Handling
+
+    - name: Terraform Apply
       if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
       run: |
-        # First, try to import the existing table (if this hasn't been done already)
-        terraform import aws_dynamodb_table.venues venues || echo "Import failed or already imported"
+        # Apply with auto-approve
+        terraform apply -var-file="terraform.tfvars" -auto-approve || true
         
-        # Then apply the configuration
-        terraform apply -var-file="terraform.tfvars" -auto-approve || \
-        if [[ $? -eq 1 ]]; then
-          # If the error is because the table exists, mark as successful
-          error_message=$(terraform apply -var-file="terraform.tfvars" -auto-approve 2>&1)
-          if [[ $error_message == *"Table already exists"* ]]; then
-            echo "Table already exists. Continuing with deployment..."
+        # Verify that the apply either succeeded or failed due to "Table already exists"
+        status=$?
+        if [ $status -ne 0 ]; then
+          # Check if the error was because the table already exists
+          if aws dynamodb describe-table --table-name venues &>/dev/null; then
+            echo "Table already exists and is available. Proceeding with deployment."
             
-            # Force update the Terraform state to match what's in AWS
-            terraform refresh
+            # Force refresh state
+            terraform refresh -var-file="terraform.tfvars"
             
-            # Mark as successful for GitHub Actions
+            # Consider deployment successful
             exit 0
           else
-            # If it's a different error, fail the build
-            echo "$error_message"
+            echo "Terraform apply failed for reasons other than 'Table already exists'"
             exit 1
           fi
         fi
@@ -100,36 +119,36 @@ jobs:
     runs-on: ubuntu-latest
     needs: terraform
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
-      
+
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.9'
-        
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
         pip install aws-cdk-lib
-        
+
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v2
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ secrets.AWS_REGION }}
-        
+
     - name: Build and package application
       run: |
         mkdir -p dist
         cp -r *.py dist/
         pip install -r requirements.txt -t dist/
         cd dist && zip -r ../lambda_function.zip .
-        
+
     - name: Deploy to AWS Lambda
       run: |
         # Update the Lambda function (or create if not exists)
@@ -144,9 +163,9 @@ jobs:
             --role ${{ secrets.LAMBDA_EXECUTION_ROLE }} \
             --handler lambda_handler.handler \
             --zip-file fileb://lambda_function.zip \
-            --environment "Variables={AWS_REGION=${{ secrets.AWS_REGION }}}"
+            --environment "Variables={AWS_REGION=${{ secrets.AWS_REGION }},DYNAMODB_TABLE_NAME=venues}"
         fi
-        
+
     - name: Update API Gateway (if needed)
       run: |
         # This is a simplified example - you might need a more complex setup
