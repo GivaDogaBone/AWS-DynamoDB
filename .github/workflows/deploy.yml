@@ -148,28 +148,116 @@ jobs:
         pip install -r requirements.txt -t dist/
         cd dist && zip -r ../lambda_function.zip .
 
+    - name: Check Lambda permissions
+      run: |
+        echo "Checking Lambda function permissions..."
+        
+        # Get the role name from the Lambda function
+        LAMBDA_NAME="venues-api"
+        ROLE_ARN=$(aws lambda get-function --function-name $LAMBDA_NAME --query 'Configuration.Role' --output text)
+        ROLE_NAME=$(echo $ROLE_ARN | awk -F '/' '{print $NF}')
+        
+        echo "Lambda function $LAMBDA_NAME uses role $ROLE_NAME (ARN: $ROLE_ARN)"
+        
+        # Check the role's policies
+        echo "Checking role policies..."
+        POLICIES=$(aws iam list-attached-role-policies --role-name $ROLE_NAME --query 'AttachedPolicies[].PolicyName' --output text)
+        echo "Attached policies: $POLICIES"
+        
+        # Check for DynamoDB access
+        echo "Checking for DynamoDB access..."
+        if echo "$POLICIES" | grep -q "DynamoDB"; then
+          echo "✅ DynamoDB policy is attached"
+        else
+          echo "⚠️ WARNING: No DynamoDB policy found! Attaching AmazonDynamoDBFullAccess policy..."
+          aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+          echo "✅ DynamoDB policy attached"
+        fi
+        
+        # Check for CloudWatch Logs access
+        echo "Checking for CloudWatch Logs access..."
+        if echo "$POLICIES" | grep -q "CloudWatch"; then
+          echo "✅ CloudWatch Logs policy is attached"
+        else
+          echo "⚠️ WARNING: No CloudWatch Logs policy found! Attaching CloudWatchLogsFullAccess policy..."
+          aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn arn:aws:iam::aws:policy/CloudWatchLogsFullAccess
+          echo "✅ CloudWatch Logs policy attached"
+        fi
+        
+        # Check Lambda configuration
+        echo "Checking Lambda configuration..."
+        CONFIG=$(aws lambda get-function-configuration --function-name $LAMBDA_NAME)
+        TIMEOUT=$(echo "$CONFIG" | jq -r '.Timeout')
+        MEMORY=$(echo "$CONFIG" | jq -r '.MemorySize')
+        HANDLER=$(echo "$CONFIG" | jq -r '.Handler')
+        
+        echo "Current configuration:"
+        echo "- Timeout: $TIMEOUT seconds"
+        echo "- Memory: $MEMORY MB"
+        echo "- Handler: $HANDLER"
+        
+        # Check if timeout is sufficient
+        if [ "$TIMEOUT" -lt 10 ]; then
+          echo "⚠️ WARNING: Lambda timeout is less than 10 seconds, which may cause timeouts"
+        else
+          echo "✅ Lambda timeout is sufficient"
+        fi
+        
+        # Check if memory is sufficient
+        if [ "$MEMORY" -lt 256 ]; then
+          echo "⚠️ WARNING: Lambda memory is less than 256 MB, which may cause performance issues"
+        else
+          echo "✅ Lambda memory is sufficient"
+        fi
+        
+        # Check if handler is correct
+        if [ "$HANDLER" == "lambda_handler.lambda_entrypoint" ]; then
+          echo "✅ Lambda handler is correctly set to lambda_handler.lambda_entrypoint"
+        else
+          echo "⚠️ WARNING: Lambda handler is set to $HANDLER, expected lambda_handler.lambda_entrypoint"
+        fi
+        
+        echo "Lambda permissions check completed"
+
     - name: Deploy to AWS Lambda
       run: |
         # Update the Lambda function (or create if not exists)
         if aws lambda get-function --function-name venues-api 2>/dev/null; then
+          echo "Lambda function exists, updating code..."
           aws lambda update-function-code \
             --function-name venues-api \
             --zip-file fileb://lambda_function.zip
-            
+          
+          # Wait for Lambda to finish updating before proceeding
+          echo "Waiting for Lambda code update to complete..."
+          aws lambda wait function-updated-v2 --function-name venues-api
+          
+          echo "Lambda code update complete, now updating configuration..."
           # Update the Lambda configuration to use the function with logging
           aws lambda update-function-configuration \
             --function-name venues-api \
             --handler lambda_handler.lambda_entrypoint \
+            --timeout 30 \
+            --memory-size 256 \
             --environment "Variables={CUSTOM_AWS_REGION=${{ secrets.AWS_REGION }},DYNAMODB_TABLE_NAME=venues}"
         else
+          echo "Lambda function does not exist, creating new function..."
           aws lambda create-function \
             --function-name venues-api \
             --runtime python3.9 \
             --role ${{ secrets.LAMBDA_EXECUTION_ROLE }} \
             --handler lambda_handler.lambda_entrypoint \
+            --timeout 30 \
+            --memory-size 256 \
             --zip-file fileb://lambda_function.zip \
             --environment "Variables={CUSTOM_AWS_REGION=${{ secrets.AWS_REGION }},DYNAMODB_TABLE_NAME=venues}"
         fi
+        
+        # Wait for Lambda to finish updating before proceeding
+        echo "Waiting for Lambda updates to complete..."
+        aws lambda wait function-updated-v2 --function-name venues-api
+        
+        echo "Lambda deployment complete."
 
     - name: Update API Gateway
       run: |

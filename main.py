@@ -146,3 +146,57 @@ async def delete_venue(venue_id: str):
         raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete venue: {str(e)}")
+
+
+@app.get("/test")
+async def test_connection():
+    """
+    Test endpoint to check connections
+    """
+    try:
+        # Test DynamoDB connection
+        dynamodb_status = "OK"
+        table_status = "Unknown"
+
+        try:
+            # Check if we can list tables
+            dynamodb_client = boto3.client('dynamodb', region_name=aws_region)
+            tables = dynamodb_client.list_tables()
+
+            # Check if our table exists
+            if table_name in tables.get('TableNames', []):
+                table_status = "Found"
+
+                # Try to scan (read) from the table
+                scan_result = table.scan(Limit=1)
+                item_count = scan_result.get('Count', 0)
+                table_status = f"Found (contains {item_count} items)"
+            else:
+                table_status = "Not Found"
+
+        except Exception as e:
+            dynamodb_status = f"Error: {str(e)}"
+
+        return {
+            "status": "ok",
+            "environment": {
+                "AWS_REGION": os.environ.get("AWS_REGION", "Not set"),
+                "CUSTOM_AWS_REGION": os.environ.get("CUSTOM_AWS_REGION", "Not set"),
+                "DYNAMODB_TABLE_NAME": os.environ.get("DYNAMODB_TABLE_NAME", "Not set"),
+                "PYTHON_VERSION": os.environ.get("PYTHONVERSION", "Not set")
+            },
+            "dynamodb": {
+                "status": dynamodb_status,
+                "region": aws_region,
+                "table": table_name,
+                "table_status": table_status
+            }
+        }
+    except Exception as e:
+        logger = logging.getLogger("uvicorn")
+        logger.error(f"Error in test endpoint: {str(e)}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "type": str(type(e).__name__)
+        }
