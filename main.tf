@@ -4,13 +4,13 @@ provider "aws" {
 }
 
 resource "aws_dynamodb_table" "venues" {
-  name           = var.table_name
-  billing_mode   = "PAY_PER_REQUEST"  # On-demand capacity mode
-  hash_key       = "venueID"
+  name         = var.table_name
+  billing_mode = "PAY_PER_REQUEST" # On-demand capacity mode
+  hash_key     = "venueID"
 
   attribute {
     name = "venueID"
-    type = "S"  # String type
+    type = "S" # String type
   }
 
   tags = {
