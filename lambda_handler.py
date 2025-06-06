@@ -32,3 +32,4 @@ def lambda_entrypoint(event, context):
 # Additional initialization can be done here
 # This code runs once when the Lambda container initializes
 logger.info("Lambda handler initialized")
+#
