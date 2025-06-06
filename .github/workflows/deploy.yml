@@ -155,12 +155,18 @@ jobs:
           aws lambda update-function-code \
             --function-name venues-api \
             --zip-file fileb://lambda_function.zip
+            
+          # Update the Lambda configuration to use the function with logging
+          aws lambda update-function-configuration \
+            --function-name venues-api \
+            --handler lambda_handler.lambda_entrypoint \
+            --environment "Variables={CUSTOM_AWS_REGION=${{ secrets.AWS_REGION }},DYNAMODB_TABLE_NAME=venues}"
         else
           aws lambda create-function \
             --function-name venues-api \
             --runtime python3.9 \
             --role ${{ secrets.LAMBDA_EXECUTION_ROLE }} \
-            --handler lambda_handler.handler \
+            --handler lambda_handler.lambda_entrypoint \
             --zip-file fileb://lambda_function.zip \
             --environment "Variables={CUSTOM_AWS_REGION=${{ secrets.AWS_REGION }},DYNAMODB_TABLE_NAME=venues}"
         fi

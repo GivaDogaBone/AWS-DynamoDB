@@ -1,6 +1,7 @@
 # lambda_handler.py
 import json
 import logging
+import os  # Missing import!
 from mangum import Mangum
 from main import app
 
@@ -19,7 +20,7 @@ logger.info(f"Environment variables: AWS_REGION={os.environ.get('AWS_REGION')}, 
 def log_request(event, context):
     """Log request details for debugging"""
     logger.info(f"Event: {json.dumps(event)}")
-    logger.info(f"Context: {str(context.__dict__)}")
+    logger.info(f"Context: {str(context)}")  # Changed to str(context) to avoid dict attribute error
     return event
 
 def lambda_entrypoint(event, context):
@@ -32,4 +33,3 @@ def lambda_entrypoint(event, context):
 # Additional initialization can be done here
 # This code runs once when the Lambda container initializes
 logger.info("Lambda handler initialized")
-#
