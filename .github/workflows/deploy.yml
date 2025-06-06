@@ -255,174 +255,148 @@ jobs:
         
         echo "Lambda deployment complete."
 
-    - name: Generate OpenAPI definition
+    - name: Update API Gateway
       run: |
-        echo "Generating OpenAPI definition for API Gateway..."
-        
-        # First ensure we have all dependencies
-        pip install fastapi pydantic
-
-        # Create a temporary Python script to extract the OpenAPI schema
-        cat > generate_openapi.py << 'EOF'
-import json
-import sys
-from main import app
-
-# Get the OpenAPI JSON
-openapi_schema = app.openapi()
-
-# Save it to a file
-with open("openapi.json", "w") as f:
-    json.dump(openapi_schema, f, indent=2)
-
-print("OpenAPI schema exported to openapi.json")
-EOF
-
-        # Run the script to generate the OpenAPI schema
-        python generate_openapi.py
-        
-        # Get AWS account ID
-        ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text)
-        
-        # Create a temporary Python script to add API Gateway extensions
-        cat > add_extensions.py << 'EOF'
-import json
-import sys
-import os
-
-# Read environment variables
-region = os.environ.get('AWS_REGION')
-account_id = os.environ.get('ACCOUNT_ID')
-
-with open("openapi.json", "r") as f:
-    schema = json.load(f)
-
-# Add API Gateway integrations
-for path in schema["paths"]:
-    for method in schema["paths"][path]:
-        if method.lower() not in ["get", "post", "put", "delete", "patch", "options", "head"]:
-            continue
-
-        schema["paths"][path][method]["x-amazon-apigateway-integration"] = {
-            "uri": f"arn:aws:apigateway:{region}:lambda:path/2015-03-31/functions/arn:aws:lambda:{region}:{account_id}:function:venues-api/invocations",
-            "passthroughBehavior": "when_no_match",
-            "httpMethod": "POST",
-            "type": "aws_proxy"
-        }
-
-# Add API Gateway binary media types if needed
-schema["x-amazon-apigateway-binary-media-types"] = ["application/json"]
-
-# Add CORS configuration
-for path in schema["paths"]:
-    # Add OPTIONS method with CORS support for each path if it doesn't exist
-    if "options" not in schema["paths"][path]:
-        schema["paths"][path]["options"] = {
-            "summary": "CORS support",
-            "description": "Enable CORS by returning correct headers",
-            "tags": ["CORS"],
-            "responses": {
-                "200": {
-                    "description": "CORS headers returned",
-                    "headers": {
-                        "Access-Control-Allow-Origin": {
-                            "schema": {"type": "string"}
-                        },
-                        "Access-Control-Allow-Methods": {
-                            "schema": {"type": "string"}
-                        },
-                        "Access-Control-Allow-Headers": {
-                            "schema": {"type": "string"}
-                        }
-                    },
-                    "content": {}
-                }
-            },
-            "x-amazon-apigateway-integration": {
-                "type": "mock",
-                "requestTemplates": {
-                    "application/json": "{'statusCode': 200}"
-                },
-                "responses": {
-                    "default": {
-                        "statusCode": "200",
-                        "responseParameters": {
-                            "method.response.header.Access-Control-Allow-Origin": "'*'",
-                            "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'",
-                            "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Amz-Date,X-Api-Key'"
-                        },
-                        "responseTemplates": {
-                            "application/json": "{}"
-                        }
-                    }
-                }
-            }
-        }
-
-    # For each method (except OPTIONS), add CORS headers to response
-    for method in schema["paths"][path]:
-        if method.lower() != "options":
-            for response in schema["paths"][path][method].get("responses", {}).values():
-                if "headers" not in response:
-                    response["headers"] = {}
-
-                response["headers"]["Access-Control-Allow-Origin"] = {"schema": {"type": "string"}}
-
-# Write the updated schema
-with open("openapi-with-extensions.json", "w") as f:
-    json.dump(schema, f, indent=2)
-EOF
-
-        # Export environment variables and run the script
-        export AWS_REGION=${{ secrets.AWS_REGION }}
-        export ACCOUNT_ID=$ACCOUNT_ID
-        python add_extensions.py
-        
-        echo "OpenAPI definition with API Gateway extensions generated"
-
-    - name: Deploy API using OpenAPI definition
-      run: |
-        # Get AWS account ID
-        ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text)
-        
         # Check if API Gateway exists
         API_ID=$(aws apigateway get-rest-apis --query "items[?name=='venues-api'].id" --output text)
         
+        # Get Lambda function ARN
+        LAMBDA_ARN=$(aws lambda get-function \
+          --function-name venues-api \
+          --query "Configuration.FunctionArn" --output text)
+        
+        # Get AWS account ID
+        ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text)
+        
         if [ -z "$API_ID" ]; then
-          echo "Creating new API Gateway from OpenAPI definition..."
-          API_ID=$(aws apigateway import-rest-api \
-            --body file://openapi-with-extensions.json \
+          echo "API Gateway not found. Creating new one..."
+          
+          # Create a new REST API
+          API_ID=$(aws apigateway create-rest-api \
             --name "venues-api" \
-            --endpoint-configuration "{ \"types\": [\"REGIONAL\"] }" \
-            --query 'id' --output text)
+            --description "API for Venues application" \
+            --endpoint-configuration "types=REGIONAL" \
+            --query "id" --output text)
           
           echo "Created new API Gateway with ID: $API_ID"
-        else
-          echo "Updating existing API Gateway with OpenAPI definition..."
-          aws apigateway put-rest-api \
+          
+          # Get the root resource ID
+          ROOT_ID=$(aws apigateway get-resources \
             --rest-api-id $API_ID \
-            --body file://openapi-with-extensions.json \
-            --mode overwrite
+            --query "items[?path=='/'].id" --output text)
+          
+          # Create a proxy resource with {proxy+} path
+          RESOURCE_ID=$(aws apigateway create-resource \
+            --rest-api-id $API_ID \
+            --parent-id $ROOT_ID \
+            --path-part "{proxy+}" \
+            --query "id" --output text)
+          
+          # Create ANY method for the proxy resource
+          aws apigateway put-method \
+            --rest-api-id $API_ID \
+            --resource-id $RESOURCE_ID \
+            --http-method ANY \
+            --authorization-type NONE
+          
+          # Create integration with Lambda for proxy
+          aws apigateway put-integration \
+            --rest-api-id $API_ID \
+            --resource-id $RESOURCE_ID \
+            --http-method ANY \
+            --type AWS_PROXY \
+            --integration-http-method POST \
+            --uri "arn:aws:apigateway:${{ secrets.AWS_REGION }}:lambda:path/2015-03-31/functions/$LAMBDA_ARN/invocations"
+          
+          # Set up method response
+          aws apigateway put-method-response \
+            --rest-api-id $API_ID \
+            --resource-id $RESOURCE_ID \
+            --http-method ANY \
+            --status-code 200 \
+            --response-models '{"application/json":"Empty"}'
+          
+          # Set up integration response
+          aws apigateway put-integration-response \
+            --rest-api-id $API_ID \
+            --resource-id $RESOURCE_ID \
+            --http-method ANY \
+            --status-code 200 \
+            --response-templates '{"application/json":""}'
+          
+          # Create ANY method for the root resource
+          aws apigateway put-method \
+            --rest-api-id $API_ID \
+            --resource-id $ROOT_ID \
+            --http-method ANY \
+            --authorization-type NONE
+          
+          # Create integration with Lambda for root
+          aws apigateway put-integration \
+            --rest-api-id $API_ID \
+            --resource-id $ROOT_ID \
+            --http-method ANY \
+            --type AWS_PROXY \
+            --integration-http-method POST \
+            --uri "arn:aws:apigateway:${{ secrets.AWS_REGION }}:lambda:path/2015-03-31/functions/$LAMBDA_ARN/invocations"
+          
+          # Set up method response for root
+          aws apigateway put-method-response \
+            --rest-api-id $API_ID \
+            --resource-id $ROOT_ID \
+            --http-method ANY \
+            --status-code 200 \
+            --response-models '{"application/json":"Empty"}'
+          
+          # Set up integration response for root
+          aws apigateway put-integration-response \
+            --rest-api-id $API_ID \
+            --resource-id $ROOT_ID \
+            --http-method ANY \
+            --status-code 200 \
+            --response-templates '{"application/json":""}'
+          
+          # Create a deployment
+          aws apigateway create-deployment \
+            --rest-api-id $API_ID \
+            --stage-name prod
+        else
+          echo "API Gateway found with ID: $API_ID"
+          
+          # Create a new deployment to update changes
+          aws apigateway create-deployment \
+            --rest-api-id $API_ID \
+            --stage-name prod
         fi
         
-        # Create deployment
-        aws apigateway create-deployment \
-          --rest-api-id $API_ID \
-          --stage-name prod
+        # Add Lambda permissions for API Gateway (try to remove existing ones first to avoid duplicates)
+        aws lambda remove-permission \
+          --function-name venues-api \
+          --statement-id apigateway-invoke-proxy || true
         
-        # Add Lambda permissions
+        aws lambda remove-permission \
+          --function-name venues-api \
+          --statement-id apigateway-invoke-root || true
+        
+        # Add new permissions
         echo "Adding Lambda permissions for API Gateway..."
+        
+        # Permission for proxy resource
         aws lambda add-permission \
           --function-name venues-api \
-          --statement-id apigateway-invoke-all \
+          --statement-id apigateway-invoke-proxy \
           --action lambda:InvokeFunction \
           --principal apigateway.amazonaws.com \
-          --source-arn "arn:aws:execute-api:${{ secrets.AWS_REGION }}:$ACCOUNT_ID:$API_ID/*/*" || true
+          --source-arn "arn:aws:execute-api:${{ secrets.AWS_REGION }}:$ACCOUNT_ID:$API_ID/*/*/{proxy+}"
         
-        # Output API URLs
-        echo "API Gateway deployment completed."
-        echo "API URL: https://$API_ID.execute-api.${{ secrets.AWS_REGION }}.amazonaws.com/prod"
-        echo "Swagger UI: https://$API_ID.execute-api.${{ secrets.AWS_REGION }}.amazonaws.com/prod/docs"
+        # Permission for root resource
+        aws lambda add-permission \
+          --function-name venues-api \
+          --statement-id apigateway-invoke-root \
+          --action lambda:InvokeFunction \
+          --principal apigateway.amazonaws.com \
+          --source-arn "arn:aws:execute-api:${{ secrets.AWS_REGION }}:$ACCOUNT_ID:$API_ID/*/*/*"
         
-        # Save API URL for later use
-        echo "https://$API_ID.execute-api.${{ secrets.AWS_REGION }}.amazonaws.com/prod" > api_url.txt
+        # Save the API URL to a file for reference
+        echo "API Gateway URL: https://$API_ID.execute-api.${{ secrets.AWS_REGION }}.amazonaws.com/prod" > api_url.txt
+        echo "To access your API, use: https://$API_ID.execute-api.${{ secrets.AWS_REGION }}.amazonaws.com/prod/venues"
