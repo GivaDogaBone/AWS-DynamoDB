@@ -10,11 +10,15 @@ from typing import Optional
 app = FastAPI(title="Venues API", description="API for managing venue data in DynamoDB")
 
 # Initialize DynamoDB client
+# Use CUSTOM_AWS_REGION if set, otherwise fall back to AWS_REGION (provided by Lambda runtime)
 dynamodb = boto3.resource(
     'dynamodb',
-    region_name=os.getenv('AWS_REGION', 'us-west-2')  # Use environment variable or default
+    region_name=os.getenv('CUSTOM_AWS_REGION', os.getenv('AWS_REGION', 'us-west-2'))
 )
-table = dynamodb.Table('venues')  # Use the table name from your Terraform config
+
+# Use the table name from environment variable or default to 'venues'
+table_name = os.getenv('DYNAMODB_TABLE_NAME', 'venues')
+table = dynamodb.Table(table_name)
 
 # Define data models
 class VenueCreate(BaseModel):

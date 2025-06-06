@@ -25,6 +25,10 @@ def lambda_entrypoint(event, context):
     Uncomment this function and change the handler in the GitHub Actions
     workflow to 'lambda_handler.lambda_entrypoint' if you need extra logging.
     """
+    # Debug environment variables if needed
+    # print(f"Region from env: {os.environ.get('CUSTOM_AWS_REGION', os.environ.get('AWS_REGION', 'not-set'))}")
+    # print(f"Table name from env: {os.environ.get('DYNAMODB_TABLE_NAME', 'not-set')}")
+
     # log_request(event, context)
     return handler(event, context)
 
