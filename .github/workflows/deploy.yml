@@ -69,18 +69,14 @@ jobs:
     - name: Terraform Plan
       run: terraform plan -var-file="terraform.tfvars"
       
-    - name: Terraform Apply
+    - name: Terraform Apply with Clean Deployment
       if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
       run: |
-        # Try to apply, but continue even if it fails with resource already exists
-        terraform apply -var-file="terraform.tfvars" -auto-approve || \
-        if [[ $? -eq 1 && $(terraform apply -var-file="terraform.tfvars" 2>&1 | grep -c "ResourceInUseException: Table already exists") -gt 0 ]]; then
-          echo "Table already exists. Continuing with deployment..."
-          exit 0
-        else
-          echo "Terraform apply failed with unexpected error"
-          exit 1
-        fi
+        # Attempt to destroy existing infrastructure (ignore errors)
+        terraform destroy -var-file="terraform.tfvars" -auto-approve || true
+        
+        # Apply the configuration to create fresh resources
+        terraform apply -var-file="terraform.tfvars" -auto-approve
 
   deploy_app:
     name: Deploy Application
