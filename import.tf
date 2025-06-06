@@ -6,9 +6,9 @@ terraform {
   # Add this import block to tell Terraform about existing resources
   # This is a new feature in Terraform 1.5+
   # If you're using an older version, you'll need to use the terraform import command manually
-  
+
   required_version = ">= 1.5.0"
-  
+
   # If your Terraform version doesn't support import blocks, comment this out
   # and use manual import with: terraform import aws_dynamodb_table.venues venues
   # import {
