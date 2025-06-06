@@ -17,4 +17,11 @@ resource "aws_dynamodb_table" "venues" {
     Name        = "${var.table_name}-table"
     Environment = var.environment
   }
+
+  # Add this lifecycle block to prevent Terraform from trying to recreate the table
+  lifecycle {
+    # This prevents Terraform from attempting to recreate the resource if it already exists
+    # but was created outside of Terraform
+    ignore_changes = all
+  }
 }
